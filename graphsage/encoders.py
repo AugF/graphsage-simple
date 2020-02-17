@@ -29,6 +29,7 @@ class Encoder(nn.Module):
         self.weight = nn.Parameter(
                 torch.FloatTensor(embed_dim, self.feat_dim if self.gcn else 2 * self.feat_dim))
         init.xavier_uniform(self.weight)
+        self.l = 1
 
     def forward(self, nodes):
         """
@@ -36,6 +37,7 @@ class Encoder(nn.Module):
 
         nodes     -- list of nodes
         """
+        print(self.l, "nodes", len(nodes))
         neigh_feats = self.aggregator.forward(nodes, [self.adj_lists[int(node)] for node in nodes], 
                 self.num_sample)
         if not self.gcn:
@@ -47,4 +49,6 @@ class Encoder(nn.Module):
         else:
             combined = neigh_feats
         combined = F.relu(self.weight.mm(combined.t()))
+        print(self.l, "combined", combined.T.shape, "\n")
+        self.l += 1
         return combined
