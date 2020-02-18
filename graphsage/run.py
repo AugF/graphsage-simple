@@ -113,31 +113,39 @@ def load_pubmed():
 def run_pubmed():
     np.random.seed(1)
     random.seed(1)
-    num_nodes = 19717
+    num_nodes, feature_dims, classes, hidden_dims = 19717, 500, 3, 128
+    n_train, n_val, n_test = 1500, 1000, 1000
+    # val: [n_val: n_train], train: [n_train:], test: [n_test:,]
+    num_samples = [10, 25]
+    batch_iters, batch_size = 200, 1024
+    gcn_flag = True
+    cuda_flag = True
+
+
     feat_data, labels, adj_lists = load_pubmed()
-    features = nn.Embedding(19717, 500)
+    features = nn.Embedding(num_nodes, feature_dims)
     features.weight = nn.Parameter(torch.FloatTensor(feat_data), requires_grad=False)
    # features.cuda()
 
     agg1 = MeanAggregator(features, cuda=True)
-    enc1 = Encoder(features, 500, 128, adj_lists, agg1, gcn=True, cuda=False)
+    enc1 = Encoder(features, feature_dims, hidden_dims, adj_lists, agg1, gcn=True, cuda=False)
     agg2 = MeanAggregator(lambda nodes : enc1(nodes).t(), cuda=False)
-    enc2 = Encoder(lambda nodes : enc1(nodes).t(), enc1.embed_dim, 128, adj_lists, agg2,
+    enc2 = Encoder(lambda nodes : enc1(nodes).t(), enc1.embed_dim, hidden_dims, adj_lists, agg2,
             base_model=enc1, gcn=True, cuda=False)
-    enc1.num_samples = 10
-    enc2.num_samples = 25
+    enc1.num_samples = num_samples[0]
+    enc2.num_samples = num_samples[1]
 
-    graphsage = SupervisedGraphSage(3, enc2)
+    graphsage = SupervisedGraphSage(classes, enc2)
 #    graphsage.cuda()
     rand_indices = np.random.permutation(num_nodes)
-    test = rand_indices[:1000]
-    val = rand_indices[1000:1500]
-    train = list(rand_indices[1500:])
+    test = rand_indices[: n_test]
+    val = rand_indices[n_val: n_train]
+    train = list(rand_indices[n_train:])
 
-    optimizer = torch.optim.SGD(filter(lambda p : p.requires_grad, graphsage.parameters()), lr=0.7)
+    optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, graphsage.parameters()), lr=0.7)
     times = []
-    for batch in range(200):
-        batch_nodes = train[:1024]
+    for batch in range(batch_iters):
+        batch_nodes = train[:batch_size]
         random.shuffle(train)
         start_time = time.time()
         optimizer.zero_grad()
@@ -154,4 +162,4 @@ def run_pubmed():
     print("Average batch time:", np.mean(times))
 
 if __name__ == "__main__":
-    run_cora()
+    run_pubmed()
