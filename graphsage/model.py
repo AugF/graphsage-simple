@@ -12,6 +12,11 @@ from collections import defaultdict
 from graphsage.encoders import Encoder
 from graphsage.aggregators import MeanAggregator
 
+import pickle as pkl
+import networkx as nx
+import scipy.sparse as sp
+import sys
+
 """
 Simple supervised GraphSAGE model as well as examples running the model
 on the Cora and Pubmed datasets.
@@ -28,19 +33,20 @@ class SupervisedGraphSage(nn.Module):
         init.xavier_uniform(self.weight)
 
     def forward(self, nodes):
+        # 这里直接利用的是第k轮的结果
         embeds = self.enc(nodes)
         scores = self.weight.mm(embeds)
         return scores.t()
 
     def loss(self, nodes, labels):
         scores = self.forward(nodes)
-        return self.xent(scores, labels.squeeze())
+        return self.xent(scores, labels.squeeze()) # 交叉熵
 
 def load_cora():
     num_nodes = 2708
     num_feats = 1433
     feat_data = np.zeros((num_nodes, num_feats))
-    labels = np.empty((num_nodes,1), dtype=np.int64)
+    labels = np.empty((num_nodes, 1), dtype=np.int64)
     node_map = {}
     label_map = {}
     with open("cora/cora.content") as fp:
@@ -61,26 +67,27 @@ def load_cora():
             adj_lists[paper1].add(paper2)
             adj_lists[paper2].add(paper1)
     return feat_data, labels, adj_lists
+    # 特征，标签，邻接表
 
 def run_cora():
     np.random.seed(1)
     random.seed(1)
     num_nodes = 2708
-    feat_data, labels, adj_lists = load_cora()
-    features = nn.Embedding(2708, 1433)
+    feat_data, labels, adj_lists = load_data("cora")
+    features = nn.Embedding(2708, 1433) # 这里只是lookup 查找表而已
     features.weight = nn.Parameter(torch.FloatTensor(feat_data), requires_grad=False)
-   # features.cuda()
 
     agg1 = MeanAggregator(features, cuda=True)
     enc1 = Encoder(features, 1433, 128, adj_lists, agg1, gcn=False, cuda=False)
-    agg2 = MeanAggregator(lambda nodes : enc1(nodes).t(), cuda=False)
-    enc2 = Encoder(lambda nodes : enc1(nodes).t(), enc1.embed_dim, 128, adj_lists, agg2,
-            base_model=enc1, gcn=False, cuda=False)
+
+    agg2 = MeanAggregator(lambda nodes: enc1(nodes).t(), cuda=True) # new features
+    enc2 = Encoder(lambda nodes: enc1(nodes).t(), enc1.embed_dim, 128, adj_lists, agg2,
+            base_model=enc1, gcn=False, cuda=True)
     enc1.num_samples = 5
     enc2.num_samples = 5
 
     graphsage = SupervisedGraphSage(7, enc2)
-#    graphsage.cuda()
+    #graphsage.cuda()
     rand_indices = np.random.permutation(num_nodes)
     test = rand_indices[:1000]
     val = rand_indices[1000:1500]
@@ -100,11 +107,10 @@ def run_cora():
         end_time = time.time()
         times.append(end_time-start_time)
         print(batch, loss.item())
-        break
 
-    # val_output = graphsage.forward(val)
-    # print("Validation F1:", f1_score(labels[val], val_output.data.numpy().argmax(axis=1), average="micro"))
-    # print("Average batch time:", np.mean(times))
+    val_output = graphsage.forward(val)
+    print("Validation F1:", f1_score(labels[val], val_output.data.numpy().argmax(axis=1), average="micro"))
+    print("Average batch time:", np.mean(times))
 
 def load_pubmed():
     #hardcoded for simplicity...
@@ -146,15 +152,15 @@ def run_pubmed():
 
     agg1 = MeanAggregator(features, cuda=True)
     enc1 = Encoder(features, 500, 128, adj_lists, agg1, gcn=True, cuda=False)
-    agg2 = MeanAggregator(lambda nodes : enc1(nodes).t(), cuda=False)
+    agg2 = MeanAggregator(lambda nodes: enc1(nodes).t(), cuda=False) # 这里只是函数
     enc2 = Encoder(lambda nodes : enc1(nodes).t(), enc1.embed_dim, 128, adj_lists, agg2,
             base_model=enc1, gcn=True, cuda=False)
-    enc1.num_samples = 10
+    enc1.num_samples = 10 # 每轮采取的邻居顶点的个数
     enc2.num_samples = 25
 
     graphsage = SupervisedGraphSage(3, enc2)
 #    graphsage.cuda()
-    rand_indices = np.random.permutation(num_nodes)
+    rand_indices = np.random.permutation(num_nodes) # num_nodes是总个数
     test = rand_indices[:1000]
     val = rand_indices[1000:1500]
     train = list(rand_indices[1500:])
@@ -167,7 +173,7 @@ def run_pubmed():
         start_time = time.time()
         optimizer.zero_grad()
         loss = graphsage.loss(batch_nodes, 
-                Variable(torch.LongTensor(labels[np.array(batch_nodes)])))
+                Variable(torch.LongTensor(labels[np.array(batch_nodes)]))) # 反向梯度传播
         loss.backward()
         optimizer.step()
         end_time = time.time()
@@ -177,6 +183,57 @@ def run_pubmed():
     val_output = graphsage.forward(val) 
     print("Validation F1:", f1_score(labels[val], val_output.data.numpy().argmax(axis=1), average="micro"))
     print("Average batch time:", np.mean(times))
+
+
+def parse_index_file(filename):
+    """Parse index file."""
+    index = []
+    for line in open(filename):
+        index.append(int(line.strip()))
+    return index
+
+def sample_mask(idx, l):
+    """Create mask."""
+    mask = np.zeros(l)
+    mask[idx] = 1
+    return np.array(mask, dtype=np.bool)
+
+def load_data(dataset_str):
+    names = ['x', 'y', 'tx', 'ty', 'allx', 'ally', 'graph']
+    objects = []
+    for i in range(len(names)):
+        with open("data/ind.{}.{}".format(dataset_str, names[i]), 'rb') as f:
+            if sys.version_info > (3, 0):
+                objects.append(pkl.load(f, encoding='latin1'))
+            else:
+                objects.append(pkl.load(f))
+
+    x, y, tx, ty, allx, ally, graph = tuple(objects)
+    test_idx_reorder = parse_index_file("data/ind.{}.test.index".format(dataset_str))
+    test_idx_range = np.sort(test_idx_reorder)
+
+    for i in graph:
+        graph[i] = set(graph[i])
+
+    if dataset_str == 'citeseer':
+        # Fix citeseer dataset (there are some isolated nodes in the graph)
+        # Find isolated nodes, add them as zero-vecs into the right position
+        test_idx_range_full = range(min(test_idx_reorder), max(test_idx_reorder)+1)
+        tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
+        tx_extended[test_idx_range-min(test_idx_range), :] = tx
+        tx = tx_extended
+        ty_extended = np.zeros((len(test_idx_range_full), y.shape[1]))
+        ty_extended[test_idx_range-min(test_idx_range), :] = ty
+        ty = ty_extended
+
+    features = sp.vstack((allx, tx)).tolil()
+    features[test_idx_reorder, :] = features[test_idx_range, :]
+
+    labels = np.vstack((ally, ty))
+    labels[test_idx_reorder, :] = labels[test_idx_range, :]
+
+    labels = np.argmax(labels, 1)
+    return features.todense(), labels, graph
 
 if __name__ == "__main__":
     run_cora()

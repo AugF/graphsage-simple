@@ -46,22 +46,24 @@ class MeanAggregator(nn.Module):
 
         if self.gcn:
             samp_neighs = [samp_neigh + set([nodes[i]]) for i, samp_neigh in enumerate(samp_neighs)]
-        unique_nodes_list = list(set.union(*samp_neighs))
-        unique_nodes = {n:i for i,n in enumerate(unique_nodes_list)}
+
+        # samp_neighs: 每个节点sample出来了哪些邻居
+        unique_nodes_list = list(set.union(*samp_neighs))  # 得到此处采样出来的所有的点
+        unique_nodes = {n:i for i,n in enumerate(unique_nodes_list)} # unique[n]:,  返回对应所有点的下标
         mask = Variable(torch.zeros(len(samp_neighs), len(unique_nodes)))
+        # nodes * unique_nodes: 用mask来表示哪些是节点的邻居
+        # column, row是坐标
         column_indices = [unique_nodes[n] for samp_neigh in samp_neighs for n in samp_neigh]
         row_indices = [i for i in range(len(samp_neighs)) for j in range(len(samp_neighs[i]))]
         mask[row_indices, column_indices] = 1
         if self.cuda:
             mask = mask.cuda()
         num_neigh = mask.sum(1, keepdim=True)
-        mask = mask.div(num_neigh)
+        mask = mask.div(num_neigh) # 只是对它对应的邻居求对应的值
         if self.cuda:
             embed_matrix = self.features(torch.LongTensor(unique_nodes_list).cuda())
+            # 提取了对应需要求的embed的向量特征
         else:
             embed_matrix = self.features(torch.LongTensor(unique_nodes_list))
-        print(self.l, "mask", mask.shape)
-        to_feats = mask.mm(embed_matrix)
-        print(self.l, "to_features", to_feats.shape)
-        self.l += 1
+        to_feats = mask.mm(embed_matrix) #   524*724 724*1433, = 524*1433, 于是这里根据狸奴计算得到的meanaggreator就得到了
         return to_feats
